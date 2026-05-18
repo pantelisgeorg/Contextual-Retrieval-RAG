@@ -129,7 +129,7 @@ API endpoints (for scripting):
 | `OPENAI_API_KEY` | — | **Required.** GPT-4o-mini API key. |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Contextualization model. |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL. |
-| `OLLAMA_EMBED_MODEL` | `nomic-embed-text-v2-moe` | Embedding model. |
+| `OLLAMA_EMBED_MODEL` | `nomic-embed-text-v2-moe` | Embedding model. Multilingual for Greek language as well |
 | `OLLAMA_QUERY_EXPANSION_MODEL` | `qmd-query-expansion` | Local query expansion model. |
 | `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | Cross-encoder reranker. |
 | `CHROMA_DB_PATH` | `./data/chromadb` | Persistent vector DB path. |
