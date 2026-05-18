@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Contextual Retrieval RAG</title>
+<style>
+  :root {
+    --bg: #fafafa; --fg: #1a1a1a; --muted: #6b6b6b; --border: #e0e0e0;
+    --card: #ffffff; --accent: #2563eb; --code-bg: #f4f4f5;
+    --ok: #16a34a; --err: #dc2626; --warn: #d97706;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --fg: #e8e8e8; --muted: #8b8b8b; --border: #2a2d36;
+      --card: #181b22; --accent: #60a5fa; --code-bg: #1f222a;
+      --ok: #4ade80; --err: #f87171; --warn: #fbbf24;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font: 15px/1.5 system-ui, -apple-system, sans-serif;
+    color: var(--fg); background: var(--bg);
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 24px 20px 80px; }
+  header { margin-bottom: 18px; }
+  .title-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  h1 { font-size: 20px; margin: 0; font-weight: 600; }
+  .badge { font-size: 12px; color: var(--muted); }
+  .models { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+    padding: 2px 8px; border-radius: 4px;
+    background: var(--code-bg); color: var(--muted);
+    border: 1px solid var(--border);
+  }
+  .chip strong { color: var(--fg); font-weight: 500; }
+
+  details.ingest-panel {
+    margin-bottom: 18px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--card); padding: 0;
+  }
+  details.ingest-panel > summary {
+    padding: 10px 14px; cursor: pointer; user-select: none; font-size: 14px;
+    color: var(--fg); list-style: none;
+  }
+  details.ingest-panel > summary::-webkit-details-marker { display: none; }
+  details.ingest-panel > summary::before { content: "▸ "; color: var(--muted); }
+  details.ingest-panel[open] > summary::before { content: "▾ "; }
+  .ingest-body { padding: 0 14px 14px; }
+  .ingest-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .ingest-controls label { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .ingest-controls label.disabled { opacity: 0.5; cursor: not-allowed; }
+  .ingest-controls select {
+    padding: 8px 10px; min-width: 220px;
+    background: var(--card); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 6px; font: inherit; font-size: 13px;
+  }
+  .hint { font-size: 12px; color: var(--warn); margin-bottom: 10px; display: none; }
+  .hint.show { display: block; }
+  .log {
+    font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--code-bg); border-radius: 6px; padding: 8px 10px;
+    max-height: 260px; overflow-y: auto;
+  }
+  .log-line { display: flex; gap: 6px; }
+  .log-line .icon { width: 14px; flex-shrink: 0; }
+  .log-line.ok .icon { color: var(--ok); }
+  .log-line.run .icon { color: var(--accent); }
+  .log-line.err .icon { color: var(--err); }
+  .log-line.warn .icon { color: var(--warn); }
+  .log-line.info .icon { color: var(--muted); }
+  .log-empty { color: var(--muted); font-size: 12px; padding: 4px 0; }
+
+  form#qform { display: flex; gap: 8px; margin-bottom: 24px; flex-wrap: wrap; }
+  input[type=text] {
+    flex: 1; min-width: 220px; padding: 10px 12px;
+    background: var(--card); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 8px; font: inherit;
+  }
+  input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  .topk { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+  .topk input { width: 56px; padding: 8px; background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; font: inherit; }
+  button {
+    padding: 10px 16px; background: var(--accent); color: white;
+    border: none; border-radius: 8px; font: inherit; font-weight: 500; cursor: pointer;
+  }
+  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--border); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  #status { color: var(--muted); font-size: 13px; margin-bottom: 6px; min-height: 1.4em; }
+  #pipeline { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; min-height: 0; }
+  #pipeline:empty { display: none; }
+  #pipeline .chip { color: var(--muted); }
+  #pipeline .chip.off { opacity: 0.45; text-decoration: line-through; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 18px; margin-bottom: 12px;
+  }
+  .card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+  .doc { font-size: 13px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .score { font-size: 13px; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .passage { font-size: 14px; }
+  .passage h1, .passage h2, .passage h3 { font-size: 15px; margin: 8px 0 4px; font-weight: 600; }
+  .passage p { margin: 6px 0; }
+  .passage code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: 13px; }
+  .passage pre { background: var(--code-bg); padding: 10px; border-radius: 6px; overflow-x: auto; font-size: 13px; }
+  .passage table { border-collapse: collapse; margin: 8px 0; font-size: 13px; }
+  .passage th, .passage td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+  .passage ul, .passage ol { margin: 6px 0; padding-left: 20px; }
+  .passage img { max-width: 100%; height: auto; border-radius: 6px; margin: 8px 0; display: block; }
+  details.context-toggle { margin-top: 10px; font-size: 13px; }
+  details.context-toggle > summary { color: var(--muted); cursor: pointer; user-select: none; }
+  details.context-toggle > summary:hover { color: var(--fg); }
+  .context { margin-top: 8px; padding: 10px 12px; background: var(--code-bg); border-radius: 6px; color: var(--fg); }
+  .empty { color: var(--muted); text-align: center; padding: 40px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="title-row">
+      <h1>Contextual Retrieval RAG</h1>
+      <span class="badge" id="badge">…</span>
+    </div>
+    <div class="models" id="models"></div>
+  </header>
+
+  <details class="ingest-panel" id="ingestPanel">
+    <summary>Ingest documents</summary>
+    <div class="ingest-body">
+      <div class="ingest-controls">
+        <select id="fileSel" title="File to ingest"></select>
+        <label id="clearLabel"><input type="checkbox" id="clearBox"> Clear database first</label>
+        <button id="ingestBtn" type="button">Ingest</button>
+      </div>
+      <div class="hint" id="hint">Re-ingesting a file already in the database requires "Clear database first" — otherwise the run will fail on duplicate chunk IDs.</div>
+      <div class="log" id="log"><div class="log-empty">No ingest run yet. Click the button above to start.</div></div>
+    </div>
+  </details>
+
+  <form id="qform">
+    <input type="text" id="q" placeholder="Ask the knowledge base…" autofocus required>
+    <label class="topk">top-k <input type="number" id="k" min="1" max="50" value="10"></label>
+    <button type="submit" id="go">Search</button>
+  </form>
+  <div id="status"></div>
+  <div id="pipeline"></div>
+  <div id="results"></div>
+</div>
+<script src="/static/marked.min.js"></script>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const form = $('qform'), qEl = $('q'), kEl = $('k'), goEl = $('go');
+  const statusEl = $('status'), resultsEl = $('results'), badgeEl = $('badge');
+  const pipelineEl = $('pipeline');
+  const modelsEl = $('models'), logEl = $('log');
+  const ingestBtn = $('ingestBtn'), clearBox = $('clearBox');
+  const fileSel = $('fileSel'), clearLabel = $('clearLabel');
+  const ingestPanel = $('ingestPanel');
+
+  marked.setOptions({ breaks: false, gfm: true });
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+
+  function refreshBadge() {
+    return fetch('/api/health').then(r => r.json()).then(d => {
+      badgeEl.textContent = `${d.chunks} chunk${d.chunks === 1 ? '' : 's'} indexed`;
+    }).catch(() => { badgeEl.textContent = 'health check failed'; });
+  }
+
+  function shortName(s) {
+    if (!s) return '';
+    const slash = s.lastIndexOf('/');
+    return slash >= 0 ? s.slice(slash + 1) : s;
+  }
+
+  function loadModels() {
+    fetch('/api/models').then(r => r.json()).then(m => {
+      const chips = [];
+      chips.push(['loader', m.doc_loader]);
+      chips.push(['contextualizer', m.contextualizer]);
+      chips.push(['embedder', m.embedder]);
+      if (m.reranker) chips.push(['reranker', shortName(m.reranker)]);
+      if (m.query_expander) chips.push(['query expander', m.query_expander]);
+      if (m.bm25_hybrid) chips.push(['hybrid', 'bm25 + vec']);
+      modelsEl.innerHTML = chips.map(([k, v]) =>
+        `<span class="chip">${escapeHtml(k)}: <strong>${escapeHtml(v)}</strong></span>`
+      ).join('');
+    });
+  }
+
+  function loadSources() {
+    return fetch('/api/sources').then(r => r.json()).then(d => {
+      const current = fileSel.value;
+      fileSel.innerHTML = '<option value="">All files in sources/</option>' +
+        d.files.map(f => `<option value="${escapeHtml(f)}">${escapeHtml(f)}</option>`).join('');
+      if (current && d.files.includes(current)) fileSel.value = current;
+      updateClearState();
+    });
+  }
+
+  function updateClearState() {
+    const isAll = fileSel.value === '';
+    if (isAll) {
+      clearBox.checked = true;
+      clearBox.disabled = true;
+      clearLabel.classList.add('disabled');
+      clearLabel.title = 'Full-folder ingest always clears the database';
+    } else {
+      clearBox.disabled = false;
+      clearLabel.classList.remove('disabled');
+      clearLabel.title = '';
+    }
+    $('hint').classList.toggle('show', !isAll && !clearBox.checked);
+  }
+
+  fileSel.addEventListener('change', updateClearState);
+  clearBox.addEventListener('change', updateClearState);
+  ingestPanel.addEventListener('toggle', () => {
+    if (ingestPanel.open) loadSources();
+  });
+
+  refreshBadge();
+  loadModels();
+  loadSources();
+
+  function logLine(kind, icon, msg) {
+    const empty = logEl.querySelector('.log-empty');
+    if (empty) empty.remove();
+    const div = document.createElement('div');
+    div.className = `log-line ${kind}`;
+    div.innerHTML = `<span class="icon">${icon}</span><span>${escapeHtml(msg)}</span>`;
+    logEl.appendChild(div);
+    logEl.scrollTop = logEl.scrollHeight;
+    return div;
+  }
+
+  ingestBtn.addEventListener('click', async () => {
+    ingestBtn.disabled = true;
+    goEl.disabled = true;
+    logEl.innerHTML = '';
+    let runningLine = null;
+
+    try {
+      const body = { clear: clearBox.checked };
+      if (fileSel.value) body.file = fileSel.value;
+      const res = await fetch('/api/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        logLine('err', '✗', err.detail || 'request failed');
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line) continue;
+          let ev;
+          try { ev = JSON.parse(line); } catch { continue; }
+
+          if (ev.type === 'stage') {
+            if (runningLine) {
+              runningLine.classList.remove('run');
+              runningLine.classList.add('ok');
+              runningLine.querySelector('.icon').textContent = '✓';
+            }
+            runningLine = logLine('run', '▶', ev.msg);
+          } else if (ev.type === 'info') {
+            logLine('info', '·', ev.msg);
+          } else if (ev.type === 'done') {
+            if (runningLine) {
+              runningLine.classList.remove('run');
+              runningLine.classList.add('ok');
+              runningLine.querySelector('.icon').textContent = '✓';
+              runningLine = null;
+            }
+            logLine('ok', '✓', ev.msg + (ev.chunks != null ? ` (${ev.chunks} chunks)` : ''));
+          } else if (ev.type === 'error') {
+            if (runningLine) {
+              runningLine.classList.remove('run');
+              runningLine.classList.add('err');
+              runningLine.querySelector('.icon').textContent = '✗';
+              runningLine = null;
+            }
+            logLine('err', '✗', ev.msg);
+          } else if (ev.type === 'warning') {
+            logLine('warn', '!', ev.msg);
+          }
+        }
+      }
+    } catch (err) {
+      logLine('err', '✗', `Stream failed: ${err.message}`);
+    } finally {
+      ingestBtn.disabled = false;
+      goEl.disabled = false;
+      refreshBadge();
+    }
+  });
+
+  function renderPipeline(p) {
+    if (!p) { pipelineEl.innerHTML = ''; return; }
+    const chips = [];
+    const exp = p.query_expansion;
+    if (exp) {
+      if (exp.applied) chips.push({ label: `expand ${exp.vector_queries}v / ${exp.bm25_queries}b`, on: true });
+      else chips.push({ label: 'expand', on: false });
+    }
+    const hyb = p.bm25_hybrid;
+    if (hyb) chips.push({ label: 'hybrid bm25+vec', on: !!hyb.applied });
+    const rr = p.reranker;
+    if (rr) {
+      if (rr.applied) chips.push({ label: `rerank ${rr.candidates} → ${rr.returned}`, on: true });
+      else chips.push({ label: 'rerank', on: false });
+    }
+    pipelineEl.innerHTML = chips.map(c =>
+      `<span class="chip${c.on ? '' : ' off'}">${escapeHtml(c.label)}</span>`
+    ).join('');
+  }
+
+  function renderResult(r) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    const head = document.createElement('div');
+    head.className = 'card-head';
+    head.innerHTML = `<span class="doc">${escapeHtml(r.doc_id)}</span><span class="score">${r.score.toFixed(2)}</span>`;
+    const body = document.createElement('div');
+    body.className = 'passage';
+    body.innerHTML = marked.parse(r.passage);
+    card.appendChild(head);
+    card.appendChild(body);
+    if (r.context) {
+      const det = document.createElement('details');
+      det.className = 'context-toggle';
+      const sum = document.createElement('summary');
+      sum.textContent = 'Show contextualization';
+      const ctx = document.createElement('div');
+      ctx.className = 'context';
+      ctx.textContent = r.context;
+      det.appendChild(sum);
+      det.appendChild(ctx);
+      card.appendChild(det);
+    }
+    return card;
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const query = qEl.value.trim();
+    if (!query) return;
+    const top_k = parseInt(kEl.value, 10) || 10;
+    goEl.disabled = true;
+    statusEl.textContent = 'Searching…';
+    pipelineEl.innerHTML = '';
+    resultsEl.innerHTML = '';
+    const t0 = performance.now();
+    try {
+      const res = await fetch('/api/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, top_k }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || 'request failed');
+      }
+      const data = await res.json();
+      const ms = Math.round(performance.now() - t0);
+      statusEl.textContent = `${data.count} result${data.count === 1 ? '' : 's'} · ${ms} ms`;
+      renderPipeline(data.pipeline);
+      if (!data.results.length) {
+        resultsEl.innerHTML = '<div class="empty">No relevant passages.</div>';
+      } else {
+        for (const r of data.results) resultsEl.appendChild(renderResult(r));
+      }
+    } catch (err) {
+      statusEl.textContent = `Error: ${err.message}`;
+    } finally {
+      goEl.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
