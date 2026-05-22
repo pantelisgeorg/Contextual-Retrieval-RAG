@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .answerer import Answerer
 from .config import Config
 from .database import VectorDatabase
 from .document_loader import DOC_IMAGES_ROOT, _supported_extensions
@@ -35,11 +36,19 @@ class ResultItem(BaseModel):
     context: str
 
 
+class CitationItem(BaseModel):
+    n: int
+    quote: str
+
+
 class QueryResponse(BaseModel):
     query: str
     count: int
     results: list[ResultItem]
     pipeline: dict
+    answer: Optional[str] = None
+    citations: list[CitationItem] = []
+    answer_error: Optional[str] = None
 
 
 class IngestRequest(BaseModel):
@@ -78,6 +87,7 @@ async def lifespan(app: FastAPI):
         app.state.retriever = _build_retriever(config)
     except RuntimeError:
         app.state.retriever = None
+    app.state.answerer = Answerer(config) if config.answer_synthesis else None
     yield
 
 
@@ -109,6 +119,7 @@ async def models() -> dict:
         "reranker": config.reranker_model if config.reranking else None,
         "query_expander": config.ollama_query_expansion_model if config.query_expansion else None,
         "bm25_hybrid": config.bm25_hybrid,
+        "answerer": config.answer_model if config.answer_synthesis else None,
     }
 
 
@@ -137,7 +148,28 @@ async def query(req: QueryRequest) -> QueryResponse:
                 context=meta.get("contextualized_content", ""),
             )
         )
-    return QueryResponse(query=req.query, count=len(items), results=items, pipeline=pipeline)
+
+    answer: Optional[str] = None
+    citations: list[CitationItem] = []
+    answer_error: Optional[str] = None
+    answerer: Optional[Answerer] = app.state.answerer
+    if answerer is not None and raw:
+        try:
+            result = await asyncio.to_thread(answerer.synthesize, req.query, raw)
+            answer = result.answer
+            citations = [CitationItem(n=c.n, quote=c.quote) for c in result.citations]
+        except Exception as e:
+            answer_error = str(e)
+
+    return QueryResponse(
+        query=req.query,
+        count=len(items),
+        results=items,
+        pipeline=pipeline,
+        answer=answer,
+        citations=citations,
+        answer_error=answer_error,
+    )
 
 
 @app.get("/api/sources")

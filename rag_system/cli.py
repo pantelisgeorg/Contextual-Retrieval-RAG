@@ -3,6 +3,7 @@ import sys
 
 from dotenv import load_dotenv
 
+from .answerer import Answerer, AnswerResult, Citation
 from .config import Config
 from .database import VectorDatabase
 from .embedder import Embedder
@@ -30,18 +31,38 @@ def _format_passage(text: str, max_chars: int | None = None) -> str:
     return " ".join(text.split())
 
 
-def _print_results(query: str, results: list[dict]) -> None:
+def _print_results(query: str, results: list[dict], answer_result: AnswerResult | None = None) -> None:
     if not results:
         print("No relevant passages found.")
         return
     print(f"\nQuery: {query}\n")
-    print(f"Found {len(results)} relevant passage(s):\n")
-    for i, r in enumerate(results, 1):
-        meta = r["metadata"]
-        score = r.get("rerank_score", r.get("similarity", 0))
-        passage = _format_passage(meta["original_content"])
-        print(f"[{i}] {meta['doc_id']}  (relevance {score:.2f})")
-        print(f"    {passage}\n")
+
+    quotes_by_n: dict[int, str] = {}
+    if answer_result and answer_result.answer:
+        print("Answer:")
+        print(answer_result.answer)
+        print()
+        quotes_by_n = {c.n: c.quote for c in answer_result.citations if c.quote}
+
+    if quotes_by_n:
+        print(f"Sources ({len(quotes_by_n)} cited):\n")
+        for n in sorted(quotes_by_n):
+            if n < 1 or n > len(results):
+                continue
+            r = results[n - 1]
+            meta = r["metadata"]
+            score = r.get("rerank_score", r.get("similarity", 0))
+            print(f"[{n}] {meta['doc_id']}  (relevance {score:.2f})")
+            print(f"    “{quotes_by_n[n]}”\n")
+        print("(Full passages available via the web UI.)\n")
+    else:
+        print(f"Sources ({len(results)} passage{'s' if len(results) != 1 else ''}):\n")
+        for i, r in enumerate(results, 1):
+            meta = r["metadata"]
+            score = r.get("rerank_score", r.get("similarity", 0))
+            passage = _format_passage(meta["original_content"])
+            print(f"[{i}] {meta['doc_id']}  (relevance {score:.2f})")
+            print(f"    {passage}\n")
 
 
 def cmd_ingest(args):
@@ -69,7 +90,13 @@ def cmd_query(args):
     retriever = Retriever(config, db, embedder, bm25, reranker, query_expander)
     k = config.top_k if args.top_k is None else args.top_k
     results = retriever.retrieve(args.query, k=k)
-    _print_results(args.query, results)
+    answer_result: AnswerResult | None = None
+    if config.answer_synthesis and results:
+        try:
+            answer_result = Answerer(config).synthesize(args.query, results)
+        except Exception as e:
+            print(f"[answer synthesis failed: {e}]\n")
+    _print_results(args.query, results, answer_result)
 
 
 def cmd_serve(args):
@@ -91,6 +118,7 @@ def cmd_chat(args):
     reranker = Reranker(config) if config.reranking else None
     query_expander = QueryExpander(config) if config.query_expansion else None
     retriever = Retriever(config, db, embedder, bm25, reranker, query_expander)
+    answerer = Answerer(config) if config.answer_synthesis else None
 
     print("RAG Chat (type 'exit' to quit)\n")
     while True:
@@ -104,7 +132,13 @@ def cmd_chat(args):
             continue
 
         results = retriever.retrieve(query, k=config.top_k)
-        _print_results(query, results)
+        answer_result: AnswerResult | None = None
+        if answerer and results:
+            try:
+                answer_result = answerer.synthesize(query, results)
+            except Exception as e:
+                print(f"[answer synthesis failed: {e}]\n")
+        _print_results(query, results, answer_result)
 
 
 def main():

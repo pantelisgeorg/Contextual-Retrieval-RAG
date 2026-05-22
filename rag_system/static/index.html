@@ -92,6 +92,27 @@
   #pipeline:empty { display: none; }
   #pipeline .chip { color: var(--muted); }
   #pipeline .chip.off { opacity: 0.45; text-decoration: line-through; }
+  .answer {
+    background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    border-radius: 10px; padding: 14px 18px; margin-bottom: 16px;
+  }
+  .answer-head { font-size: 12px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .answer-body { font-size: 15px; }
+  .answer-body p { margin: 6px 0; }
+  .answer-body code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: 13px; }
+  .answer-body ul, .answer-body ol { margin: 6px 0; padding-left: 20px; }
+  .answer-error { border-left-color: var(--err); color: var(--err); }
+  .sources-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 8px 0 8px; }
+  .quote {
+    font-size: 14px; padding: 8px 12px; border-left: 2px solid var(--border);
+    background: var(--code-bg); border-radius: 0 6px 6px 0; margin: 4px 0 0;
+    font-style: italic;
+  }
+  .citation-num {
+    display: inline-block; font: 11px/1 ui-monospace, Menlo, monospace;
+    background: var(--accent); color: white; padding: 2px 6px; border-radius: 3px;
+    margin-right: 6px; font-style: normal;
+  }
   .card {
     background: var(--card); border: 1px solid var(--border); border-radius: 10px;
     padding: 16px 18px; margin-bottom: 12px;
@@ -145,6 +166,7 @@
   </form>
   <div id="status"></div>
   <div id="pipeline"></div>
+  <div id="answer"></div>
   <div id="results"></div>
 </div>
 <script src="/static/marked.min.js"></script>
@@ -152,7 +174,7 @@
   const $ = (id) => document.getElementById(id);
   const form = $('qform'), qEl = $('q'), kEl = $('k'), goEl = $('go');
   const statusEl = $('status'), resultsEl = $('results'), badgeEl = $('badge');
-  const pipelineEl = $('pipeline');
+  const pipelineEl = $('pipeline'), answerEl = $('answer');
   const modelsEl = $('models'), logEl = $('log');
   const ingestBtn = $('ingestBtn'), clearBox = $('clearBox');
   const fileSel = $('fileSel'), clearLabel = $('clearLabel');
@@ -186,6 +208,7 @@
       chips.push(['embedder', m.embedder]);
       if (m.reranker) chips.push(['reranker', shortName(m.reranker)]);
       if (m.query_expander) chips.push(['query expander', m.query_expander]);
+      if (m.answerer) chips.push(['answerer', m.answerer]);
       if (m.bm25_hybrid) chips.push(['hybrid', 'bm25 + vec']);
       modelsEl.innerHTML = chips.map(([k, v]) =>
         `<span class="chip">${escapeHtml(k)}: <strong>${escapeHtml(v)}</strong></span>`
@@ -333,17 +356,47 @@
     ).join('');
   }
 
-  function renderResult(r) {
+  function renderAnswer(answer, error) {
+    if (error) {
+      answerEl.innerHTML = `<div class="answer answer-error"><div class="answer-head">Answer synthesis failed</div><div class="answer-body">${escapeHtml(error)}</div></div>`;
+      return;
+    }
+    if (!answer) return;
+    answerEl.innerHTML = `<div class="answer"><div class="answer-head">Answer</div><div class="answer-body">${marked.parse(answer)}</div></div>`;
+  }
+
+  function renderResult(r, citationNum, quote) {
     const card = document.createElement('div');
     card.className = 'card';
     const head = document.createElement('div');
     head.className = 'card-head';
-    head.innerHTML = `<span class="doc">${escapeHtml(r.doc_id)}</span><span class="score">${r.score.toFixed(2)}</span>`;
-    const body = document.createElement('div');
-    body.className = 'passage';
-    body.innerHTML = marked.parse(r.passage);
+    const numHtml = citationNum ? `<span class="citation-num">[${citationNum}]</span>` : '';
+    head.innerHTML = `<span class="doc">${numHtml}${escapeHtml(r.doc_id)}</span><span class="score">${r.score.toFixed(2)}</span>`;
     card.appendChild(head);
-    card.appendChild(body);
+
+    if (quote) {
+      const q = document.createElement('div');
+      q.className = 'quote';
+      q.textContent = '“' + quote + '”';
+      card.appendChild(q);
+
+      const det = document.createElement('details');
+      det.className = 'context-toggle';
+      const sum = document.createElement('summary');
+      sum.textContent = 'Show full passage';
+      const body = document.createElement('div');
+      body.className = 'passage';
+      body.innerHTML = marked.parse(r.passage);
+      det.appendChild(sum);
+      det.appendChild(body);
+      card.appendChild(det);
+    } else {
+      const body = document.createElement('div');
+      body.className = 'passage';
+      body.innerHTML = marked.parse(r.passage);
+      card.appendChild(body);
+    }
+
     if (r.context) {
       const det = document.createElement('details');
       det.className = 'context-toggle';
@@ -367,6 +420,7 @@
     goEl.disabled = true;
     statusEl.textContent = 'Searching…';
     pipelineEl.innerHTML = '';
+    answerEl.innerHTML = '';
     resultsEl.innerHTML = '';
     const t0 = performance.now();
     try {
@@ -383,10 +437,23 @@
       const ms = Math.round(performance.now() - t0);
       statusEl.textContent = `${data.count} result${data.count === 1 ? '' : 's'} · ${ms} ms`;
       renderPipeline(data.pipeline);
+      renderAnswer(data.answer, data.answer_error);
       if (!data.results.length) {
         resultsEl.innerHTML = '<div class="empty">No relevant passages.</div>';
       } else {
-        for (const r of data.results) resultsEl.appendChild(renderResult(r));
+        const quotesByN = new Map((data.citations || []).map(c => [c.n, c.quote]));
+        const hasCitations = quotesByN.size > 0;
+        if (data.answer) {
+          const lbl = document.createElement('div');
+          lbl.className = 'sources-label';
+          lbl.textContent = hasCitations ? 'Cited sources' : 'Sources';
+          resultsEl.appendChild(lbl);
+        }
+        data.results.forEach((r, idx) => {
+          const n = idx + 1;
+          if (hasCitations && !quotesByN.has(n)) return;
+          resultsEl.appendChild(renderResult(r, hasCitations ? n : null, quotesByN.get(n) || null));
+        });
       }
     } catch (err) {
       statusEl.textContent = `Error: ${err.message}`;

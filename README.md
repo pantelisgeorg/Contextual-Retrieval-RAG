@@ -143,6 +143,9 @@ API endpoints (for scripting):
 | `SEMANTIC_WEIGHT` | `0.8` | RRF weight for semantic search. |
 | `BM25_WEIGHT` | `0.2` | RRF weight for BM25. |
 | `TOP_K` | `10` | Default number of results. |
+| `ANSWER_SYNTHESIS` | `true` | Generate a written answer from the retrieved passages (with inline `[n]` citations). Disable to return raw chunks only. |
+| `ANSWER_MODEL` | falls back to `OPENAI_MODEL` | LLM used for answer synthesis (e.g. `gpt-4o-mini`, `gpt-4o`). |
+| `ANSWER_MAX_TOKENS` | `800` | Max tokens in the synthesized answer. |
 | `CUDA_VISIBLE_DEVICES` | unset | Set to empty string (`CUDA_VISIBLE_DEVICES=`) to force CPU — required for older GPUs (compute capability < 6.x) where torch's pre-built CUDA kernels are incompatible. |
 
 ## Project Structure
@@ -159,6 +162,7 @@ API endpoints (for scripting):
 │   ├── bm25_index.py        # Lightweight BM25
 │   ├── reranker.py          # BGE cross-encoder reranker
 │   ├── query_expander.py    # qmd-query-expansion (Qwen3-1.7B)
+│   ├── answerer.py          # Strict-grounded answer synthesis with citations
 │   ├── retriever.py         # RRF fusion + rerank pipeline
 │   ├── ingest.py            # End-to-end ingest function with progress callback
 │   ├── web.py               # FastAPI app (used by `serve`)
@@ -190,7 +194,8 @@ API endpoints (for scripting):
    - Semantic search (ChromaDB) ⨯ BM25 search (`rank-bm25`).
    - Reciprocal Rank Fusion combines both lists.
    - Optional reranking with `bge-reranker-v2-m3` re-scores the top candidates.
-7. **Display** — the web UI renders chunks as markdown so headings and diagrams are visible inline; pipeline chips show what actually ran for the query.
+7. **Answer synthesis** — when `ANSWER_SYNTHESIS=true`, the retrieved passages and the question are sent to `ANSWER_MODEL` (default `gpt-4o-mini`) with a strict-grounding prompt: answer only from the passages, match the question's language, cite passages inline as `[1]`, `[3]`, etc. The answer is rendered above the source chunks.
+8. **Display** — the web UI shows the synthesized answer at the top and renders source chunks as markdown so headings and diagrams are visible inline; pipeline chips show what actually ran for the query.
 
 ## Notes
 

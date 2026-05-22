@@ -22,6 +22,9 @@ class Config:
     bm25_weight: float
     top_k: int
     use_docling: bool
+    answer_synthesis: bool
+    answer_model: str
+    answer_max_tokens: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -46,4 +49,7 @@ class Config:
             bm25_weight=float(os.getenv("BM25_WEIGHT", "0.2")),
             top_k=int(os.getenv("TOP_K", "10")),
             use_docling=os.getenv("USE_DOCLING", "false").lower() == "true",
+            answer_synthesis=os.getenv("ANSWER_SYNTHESIS", "true").lower() == "true",
+            answer_model=os.getenv("ANSWER_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini")),
+            answer_max_tokens=int(os.getenv("ANSWER_MAX_TOKENS", "800")),
         )
