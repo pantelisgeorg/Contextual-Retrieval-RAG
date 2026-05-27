@@ -135,6 +135,8 @@ API endpoints (for scripting):
 | `CHROMA_DB_PATH` | `./data/chromadb` | Persistent vector DB path. |
 | `SOURCES_DIR` | `./sources` | Input documents folder. |
 | `USE_DOCLING` | `false` | Enable Docling for structure-preserving extraction (markdown, headings, tables, images). Recommended `true`. |
+| `OCR_ENABLED` | `false` | Run OCR on image regions / scanned pages (Docling only). Born-digital PDFs don't need it. Enable for scanned docs. Requires Tesseract installed system-wide. |
+| `OCR_LANGS` | `ell+eng` | `+`-separated [Tesseract language codes](https://github.com/tesseract-ocr/tessdata). Each language requires its `tesseract-ocr-<code>` system package (e.g. `sudo apt install tesseract-ocr-ell tesseract-ocr-eng`). |
 | `CHUNK_SIZE` | `800` | Characters per chunk. Larger → fewer GPT calls during ingest, but coarser retrieval granularity. 1500–3000 works well with Docling. |
 | `CHUNK_OVERLAP` | `100` | Overlap when a section exceeds chunk size and must be split. |
 | `QUERY_EXPANSION` | `false` | Enable query expansion. |
@@ -169,9 +171,11 @@ API endpoints (for scripting):
 │   ├── static/              # Single-page UI (index.html + marked.min.js)
 │   └── cli.py               # CLI entry point (ingest / query / chat / serve)
 ├── sources/                 # Drop raw documents here
-├── data/                    # ChromaDB + BM25 index + Docling images (gitignored)
+├── data/                    # ChromaDB + BM25 index + Docling artifacts (gitignored)
 │   ├── chromadb/
-│   └── images/{slug}/       # Per-doc image artifacts (referenced from markdown)
+│   ├── images/{slug}/       # Per-doc image artifacts (referenced from markdown)
+│   ├── markdown/{slug}.md   # Docling-extracted markdown with /images/... URLs (web-UI / RAG)
+│   └── export/{slug}.md     # Same markdown but with images base64-embedded — single-file artifact for wikis
 ├── .venv/                   # uv-managed virtualenv (gitignored)
 ├── pyproject.toml           # Source of truth for deps; defines `rag-system` console script
 ├── uv.lock                  # Reproducible install
@@ -184,7 +188,7 @@ API endpoints (for scripting):
 
 ## How It Works
 
-1. **Document loading** — when `USE_DOCLING=true`, PDFs/DOCX/PPTX/HTML go through Docling, producing markdown with real headings, tables, and `![Image](/images/...)` references. Otherwise PyMuPDF extracts plain text from PDFs.
+1. **Document loading** — when `USE_DOCLING=true`, PDFs/DOCX/PPTX/HTML go through Docling, producing markdown with real headings, tables, and `![Image](/images/...)` references. Two persistent copies are written per document: `data/markdown/<slug>.md` (image-referenced, fed into the RAG and the web UI) and `data/export/<slug>.md` (base64-embedded, a single self-contained file you can hand to a wiki). With `OCR_ENABLED=true`, Tesseract OCRs any region without an embedded text layer. Otherwise PyMuPDF extracts plain text from PDFs.
 2. **Heading-aware chunking** — markdown is split on heading boundaries; small adjacent sections are greedily packed up to `CHUNK_SIZE` so each chunk is semantically coherent (a full section, not a mid-sentence cut). Heading paths are preserved as prefixes so the contextualizer and embedder see *where* each chunk lives.
 3. **Contextualization** — for each chunk, GPT-4o-mini gets the full document plus that chunk and returns 1–2 sentences situating the chunk in the larger doc. That blurb is **prepended to the chunk before embedding** ([Anthropic's Contextual Retrieval technique](https://www.anthropic.com/news/contextual-retrieval)).
 4. **Embedding** — the contextualized chunk is embedded via Ollama's `nomic-embed-text-v2-moe`.
@@ -195,7 +199,7 @@ API endpoints (for scripting):
    - Reciprocal Rank Fusion combines both lists.
    - Optional reranking with `bge-reranker-v2-m3` re-scores the top candidates.
 7. **Answer synthesis** — when `ANSWER_SYNTHESIS=true`, the retrieved passages and the question are sent to `ANSWER_MODEL` (default `gpt-4o-mini`) with a strict-grounding prompt: answer only from the passages, match the question's language, cite passages inline as `[1]`, `[3]`, etc. The answer is rendered above the source chunks.
-8. **Display** — the web UI shows the synthesized answer at the top and renders source chunks as markdown so headings and diagrams are visible inline; pipeline chips show what actually ran for the query.
+8. **Display** — the web UI shows the synthesized answer at the top and renders source chunks as markdown so headings and diagrams are visible inline. To make sure figures show even when the cited chunk is text-only (the chunker can split a figure away from its descriptive paragraph), the server retrieves a larger candidate pool and surfaces up to 3 extra image-bearing chunks from the same document, ranked by the retriever's own score. Pipeline chips show what actually ran for the query.
 
 ## Notes
 

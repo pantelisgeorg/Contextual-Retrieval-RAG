@@ -55,9 +55,17 @@ def run_ingest(
 
     if config.use_docling:
         emit(type="info", msg="Docling enabled — using structured markdown extraction.")
+        if config.ocr_enabled:
+            emit(type="info", msg=f"OCR enabled (Tesseract, langs={config.ocr_langs})")
 
     emit(type="stage", stage="loading", msg=f"Loading documents from {config.sources_dir}")
-    docs = load_documents(config.sources_dir, use_docling=config.use_docling, single_file=file)
+    docs = load_documents(
+        config.sources_dir,
+        use_docling=config.use_docling,
+        single_file=file,
+        ocr_enabled=config.ocr_enabled,
+        ocr_langs=config.ocr_langs,
+    )
     if not docs:
         emit(type="done", chunks=0, msg="No documents found.")
         return

@@ -134,7 +134,12 @@ async def query(req: QueryRequest) -> QueryResponse:
         raise HTTPException(status_code=400, detail="top_k must be positive")
 
     pipeline: dict = {}
-    raw = retriever.retrieve(req.query, k=k, pipeline=pipeline)
+    # Retrieve a larger pool than the user's top_k so we can pick image-bearing
+    # augmentation chunks ranked by actual relevance, not chunk-index proximity.
+    fetch_k = max(k, 20)
+    raw_full = retriever.retrieve(req.query, k=fetch_k, pipeline=pipeline)
+    raw = raw_full[:k]
+    raw_extra = raw_full[k:]
     items = []
     for r in raw:
         meta = r["metadata"]
@@ -160,6 +165,31 @@ async def query(req: QueryRequest) -> QueryResponse:
             citations = [CitationItem(n=c.n, quote=c.quote) for c in result.citations]
         except Exception as e:
             answer_error = str(e)
+
+    # Augment with image-bearing chunks already ranked by the retriever, so figures
+    # appear alongside the answer even when top_k is small or the cited chunk is
+    # text-only. Cap at 3 to avoid flooding.
+    doc_ids = {r["metadata"]["doc_id"] for r in raw}
+    added = 0
+    for r in raw_extra:
+        if added >= 3:
+            break
+        meta = r["metadata"]
+        if meta["doc_id"] not in doc_ids:
+            continue
+        if "![" not in meta.get("original_content", ""):
+            continue
+        score = r.get("rerank_score", r.get("similarity", 0.0))
+        items.append(
+            ResultItem(
+                chunk_id=r["chunk_id"],
+                doc_id=meta["doc_id"],
+                score=float(score),
+                passage=meta["original_content"],
+                context=meta.get("contextualized_content", ""),
+            )
+        )
+        added += 1
 
     return QueryResponse(
         query=req.query,

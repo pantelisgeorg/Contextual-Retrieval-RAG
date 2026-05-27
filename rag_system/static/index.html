@@ -449,10 +449,15 @@
           lbl.textContent = hasCitations ? 'Cited sources' : 'Sources';
           resultsEl.appendChild(lbl);
         }
+        const imgRe = /!\[[^\]]*\]\([^)]+\)/;
         data.results.forEach((r, idx) => {
           const n = idx + 1;
-          if (hasCitations && !quotesByN.has(n)) return;
-          resultsEl.appendChild(renderResult(r, hasCitations ? n : null, quotesByN.get(n) || null));
+          const cited = quotesByN.has(n);
+          const hasImage = imgRe.test(r.passage);
+          if (hasCitations && !cited && !hasImage) return;
+          const citationNum = cited ? n : null;
+          const quote = cited ? quotesByN.get(n) : null;
+          resultsEl.appendChild(renderResult(r, citationNum, quote));
         });
       }
     } catch (err) {

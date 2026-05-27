@@ -1,12 +1,13 @@
 import re
 import shutil
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
 
 DOC_IMAGES_ROOT = Path("./data/images")
+DOC_MARKDOWN_ROOT = Path("./data/markdown")
+DOC_EXPORT_ROOT = Path("./data/export")
 
 
 @dataclass
@@ -68,14 +69,16 @@ def _extract_pdf_pymupdf(path: Path) -> str:
 
 
 _docling_converter = None
+_docling_converter_key: tuple | None = None
 
 
-def _get_docling_converter():
-    global _docling_converter
-    if _docling_converter is None:
+def _get_docling_converter(ocr_enabled: bool = False, ocr_langs: str = "ell+eng"):
+    global _docling_converter, _docling_converter_key
+    key = (ocr_enabled, ocr_langs)
+    if _docling_converter is None or _docling_converter_key != key:
         try:
             from docling.datamodel.base_models import InputFormat
-            from docling.datamodel.pipeline_options import PdfPipelineOptions
+            from docling.datamodel.pipeline_options import PdfPipelineOptions, TesseractCliOcrOptions
             from docling.document_converter import DocumentConverter, PdfFormatOption
         except ImportError:
             raise ImportError(
@@ -84,11 +87,15 @@ def _get_docling_converter():
         pdf_opts = PdfPipelineOptions()
         pdf_opts.images_scale = 2.0
         pdf_opts.generate_picture_images = True
+        pdf_opts.do_ocr = ocr_enabled
+        if ocr_enabled:
+            pdf_opts.ocr_options = TesseractCliOcrOptions(lang=ocr_langs.split("+"))
         _docling_converter = DocumentConverter(
             format_options={
                 InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_opts)
             }
         )
+        _docling_converter_key = key
     return _docling_converter
 
 
@@ -97,10 +104,10 @@ def _doc_slug(stem: str) -> str:
     return (safe[:80] or "doc")
 
 
-def _extract_with_docling(path: Path) -> str:
+def _extract_with_docling(path: Path, ocr_enabled: bool = False, ocr_langs: str = "ell+eng") -> str:
     from docling_core.types.doc import ImageRefMode
 
-    converter = _get_docling_converter()
+    converter = _get_docling_converter(ocr_enabled, ocr_langs)
     result = converter.convert(str(path))
 
     slug = _doc_slug(path.stem)
@@ -108,26 +115,43 @@ def _extract_with_docling(path: Path) -> str:
     if images_dir.exists():
         shutil.rmtree(images_dir)
     images_dir.mkdir(parents=True, exist_ok=True)
+    DOC_MARKDOWN_ROOT.mkdir(parents=True, exist_ok=True)
+    md_out = (DOC_MARKDOWN_ROOT / f"{slug}.md").resolve()
 
-    with tempfile.TemporaryDirectory() as tmp:
-        md_file = Path(tmp) / "doc.md"
-        result.document.save_as_markdown(
-            md_file,
-            artifacts_dir=images_dir,
-            image_mode=ImageRefMode.REFERENCED,
-        )
-        md = md_file.read_text(encoding="utf-8")
+    result.document.save_as_markdown(
+        md_out,
+        artifacts_dir=images_dir,
+        image_mode=ImageRefMode.REFERENCED,
+    )
+    md = md_out.read_text(encoding="utf-8")
 
-    # Rewrite absolute artifact paths to URLs the FastAPI server can serve.
+    # Rewrite absolute artifact paths to URLs the FastAPI server can serve,
+    # and persist the URL-rewritten markdown.
     md = md.replace(str(images_dir), f"/images/{slug}")
+    md_out.write_text(md, encoding="utf-8")
+
+    # Also write a self-contained markdown with images embedded as base64
+    # data URIs — single-file artifact suitable for wikis that ingest only .md.
+    DOC_EXPORT_ROOT.mkdir(parents=True, exist_ok=True)
+    result.document.save_as_markdown(
+        DOC_EXPORT_ROOT / f"{slug}.md",
+        image_mode=ImageRefMode.EMBEDDED,
+    )
+
     return md
 
 
-def _load_file(path: Path, use_docling: bool, root: Path | None = None) -> Document | None:
+def _load_file(
+    path: Path,
+    use_docling: bool,
+    root: Path | None = None,
+    ocr_enabled: bool = False,
+    ocr_langs: str = "ell+eng",
+) -> Document | None:
     suffix = path.suffix.lower()
     try:
         if use_docling and suffix in DOCLING_EXTENSIONS:
-            content = _extract_with_docling(path)
+            content = _extract_with_docling(path, ocr_enabled, ocr_langs)
         elif suffix in PYMUPDF_EXTENSIONS:
             content = _extract_pdf_pymupdf(path)
         else:
@@ -145,6 +169,8 @@ def load_documents(
     sources_dir: str,
     use_docling: bool = False,
     single_file: str | None = None,
+    ocr_enabled: bool = False,
+    ocr_langs: str = "ell+eng",
 ) -> List[Document]:
     docs = []
     root = Path(sources_dir)
@@ -159,14 +185,14 @@ def load_documents(
             raise FileNotFoundError(f"File not found: {single_file}")
         if path.suffix.lower() not in extensions:
             raise ValueError(f"Unsupported file type: {path.suffix}")
-        doc = _load_file(path, use_docling)
+        doc = _load_file(path, use_docling, ocr_enabled=ocr_enabled, ocr_langs=ocr_langs)
         if doc:
             docs.append(doc)
         return docs
 
     for path in root.rglob("*"):
         if path.is_file() and path.suffix.lower() in extensions:
-            doc = _load_file(path, use_docling, root)
+            doc = _load_file(path, use_docling, root, ocr_enabled=ocr_enabled, ocr_langs=ocr_langs)
             if doc:
                 docs.append(doc)
 
