@@ -224,7 +224,7 @@ The torch stack is pinned to **`torch==2.5.1+cu121`** (CUDA 12.1) in `pyproject.
 
 | GPU family | Example | Compute capability | Supported |
 |---|---|---|---|
-| Maxwell | Quadro K620 | 5.0 | Yes |
+
 | Pascal | GTX 1070 Ti | 6.1 | Yes |
 | Turing | RTX 2070 | 7.5 | Yes |
 | Ampere | RTX 3080 | 8.6 | Yes |
