@@ -100,6 +100,114 @@ def _build_default_converter(ocr_enabled: bool = False, ocr_langs: str = "ell+en
     )
 
 
+_v1_converter = None
+_v1_converter_key: tuple | None = None
+
+
+def _build_v1_converter(ocr_enabled: bool = False, ocr_langs: str = "ell+eng"):
+    """Same standard pipeline, but with the v1 TableFormer.
+
+    v1 and v2 each mis-structure different tables: v2 keeps cell text intact
+    but sometimes overlaps columns; v1 gets clean grids for some tables v2
+    garbles (and vice-versa). Used as a per-table fallback.
+    """
+    from docling.datamodel.base_models import InputFormat
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+    from docling.datamodel.pipeline_options import (
+        PdfPipelineOptions,
+        TableStructureOptions,
+        TableFormerMode,
+        TesseractCliOcrOptions,
+    )
+
+    pdf_opts = PdfPipelineOptions()
+    pdf_opts.images_scale = 2.0
+    pdf_opts.generate_picture_images = True
+    pdf_opts.do_table_structure = True
+    pdf_opts.table_structure_options = TableStructureOptions(
+        do_cell_matching=True, mode=TableFormerMode.ACCURATE
+    )
+    pdf_opts.do_ocr = ocr_enabled
+    if ocr_enabled:
+        pdf_opts.ocr_options = TesseractCliOcrOptions(lang=ocr_langs.split("+"))
+    return DocumentConverter(
+        format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_opts)}
+    )
+
+
+def _get_v1_converter(ocr_enabled: bool = False, ocr_langs: str = "ell+eng"):
+    global _v1_converter, _v1_converter_key
+    key = (ocr_enabled, ocr_langs)
+    if _v1_converter is None or _v1_converter_key != key:
+        try:
+            _v1_converter = _build_v1_converter(ocr_enabled, ocr_langs)
+        except ImportError:
+            _v1_converter = None
+        _v1_converter_key = key
+    return _v1_converter
+
+
+def _table_garble_score(table) -> float:
+    """Heuristic: 0 = clean grid. Penalises overlapping cell boxes (columns
+    that bleed into each other) and duplicate cell text within a row."""
+    data = getattr(table, "data", None)
+    if data is None or not data.table_cells:
+        return 0.0
+    rows: dict[int, list] = {}
+    for c in data.table_cells:
+        rows.setdefault(c.start_row_offset_idx, []).append(c)
+    total_overlap = 0.0
+    total_width = 0.0
+    dup_penalty = 0.0
+    for cells in rows.values():
+        cells = [c for c in cells if getattr(c, "bbox", None) is not None]
+        if len(cells) < 2:
+            continue
+        cells = sorted(cells, key=lambda c: c.bbox.l)
+        for i in range(len(cells) - 1):
+            total_overlap += max(0.0, cells[i].bbox.r - cells[i + 1].bbox.l)
+        total_width += max(c.bbox.r for c in cells) - min(c.bbox.l for c in cells)
+        texts = [c.text.strip() for c in cells if c.text.strip()]
+        if len(texts) != len(set(texts)):
+            dup_penalty += 0.5
+    overlap_ratio = total_overlap / total_width if total_width > 0 else 0.0
+    return overlap_ratio + dup_penalty
+
+
+def _refine_tables_with_v1(result, path, ocr_enabled, ocr_langs) -> None:
+    """For any table the v2 model garbled (overlapping columns / duplicated
+    text), re-convert just that page with the v1 TableFormer and keep whichever
+    version is cleaner. Only the default pipeline; no-op for SmolDocling."""
+    tables = getattr(result.document, "tables", []) or []
+    # Group tables by page (preserve order within a page).
+    by_page: dict[int, list] = {}
+    for t in tables:
+        prov = getattr(t, "prov", None) or []
+        pg = prov[0].page_no if prov else None
+        by_page.setdefault(pg, []).append(t)
+
+    needs_v1 = any(_table_garble_score(t) > 0.1 for t in tables)
+    if not needs_v1:
+        return
+    v1_conv = _get_v1_converter(ocr_enabled, ocr_langs)
+    if v1_conv is None:
+        return
+    for pg, page_tables in by_page.items():
+        if pg is None or not any(_table_garble_score(t) > 0.1 for t in page_tables):
+            continue
+        try:
+            res_v1 = v1_conv.convert(str(path), page_range=(pg, pg))
+        except Exception:
+            continue
+        v1_tables = getattr(res_v1.document, "tables", []) or []
+        for i, t_v2 in enumerate(page_tables):
+            if i >= len(v1_tables):
+                break
+            t_v1 = v1_tables[i]
+            if _table_garble_score(t_v1) < _table_garble_score(t_v2):
+                t_v2.data = t_v1.data
+
+
 def _build_smoldocling_converter(vlm_max_size: int):
     """SmolDocling VLM pipeline (docling-project/SmolDocling-256M-preview).
 
@@ -236,6 +344,10 @@ def _extract_with_docling(
 
     converter = _get_docling_converter(ocr_enabled, ocr_langs, docling_model, vlm_max_size)
     result = converter.convert(str(path))
+    if docling_model != "smoldocling":
+        # v2 garbles some tables that v1 gets right (and vice-versa): re-convert
+        # any garbled page with v1 and keep the cleaner table, then fix columns.
+        _refine_tables_with_v1(result, path, ocr_enabled, ocr_langs)
     _fix_table_column_order(result)
 
     slug = _doc_slug(path.stem)
