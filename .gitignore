@@ -37,6 +37,9 @@ Thumbs.db
 # Logs
 *.log
 
+# Opencode session transcripts
+session-*.md
+
 # User-supplied documents — keep the directory, ignore its contents
 sources/*
 !sources/.gitkeep
