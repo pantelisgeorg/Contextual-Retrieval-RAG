@@ -37,7 +37,7 @@ class Config:
             ollama_host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
             ollama_embed_model=os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text-v2-moe"),
             ollama_query_expansion_model=os.getenv(
-                "OLLAMA_QUERY_EXPANSION_MODEL", "qmd-query-expansion"
+                "OLLAMA_QUERY_EXPANSION_MODEL", "hf.co/tobil/qmd-query-expansion-1.7b-GGUF:Q4_K_M"
             ),
             reranker_model=os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"),
             chroma_db_path=os.getenv("CHROMA_DB_PATH", "./data/chromadb"),
