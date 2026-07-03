@@ -12,7 +12,7 @@ A complete implementation of Anthropic's **Contextual Retrieval** technique with
 | Vector DB | In-memory / pickle | **ChromaDB** (persistent) |
 | BM25 Hybrid | Elasticsearch (Docker) | **`rank-bm25`** (pure Python) |
 | Reranker | Cohere API | **Local `BAAI/bge-reranker-v2-m3`** |
-| Query Expansion | — | **Ollama `qmd-query-expansion-1.7B-GGUF`** |
+| Query Expansion | — | **Ollama `hf.co/tobil/qmd-query-expansion-1.7b-GGUF:Q4_K_M`** |
 | Web UI | — | **FastAPI** + a single static HTML page |
 
 ## Prerequisites
@@ -31,7 +31,7 @@ A complete implementation of Anthropic's **Contextual Retrieval** technique with
 | Docling layout + OCR | PDF/DOCX/PPTX → structured markdown | Auto-downloaded from Hugging Face on first ingest | ~500 MB |
 | `gpt-4o-mini` | Chunk contextualization (ingest only) | OpenAI API — needs `OPENAI_API_KEY` | — |
 | `nomic-embed-text-v2-moe` | Embeddings | `ollama pull` | ~500 MB |
-| `qmd-query-expansion-1.7B-GGUF:Q4_K_M` | Query expansion | `ollama pull` from Hugging Face | ~1 GB |
+| `hf.co/tobil/qmd-query-expansion-1.7b-GGUF:Q4_K_M` | Query expansion | `ollama pull` from Hugging Face | ~1 GB |
 | `BAAI/bge-reranker-v2-m3` | Cross-encoder reranker | Auto-downloaded from Hugging Face on first query | ~600 MB |
 
 ## Quick Start
@@ -50,8 +50,7 @@ uv sync
 
 ```bash
 ollama pull nomic-embed-text-v2-moe
-ollama pull hf.co/tobil/qmd-query-expansion-1.7B-GGUF:Q4_K_M
-ollama cp hf.co/tobil/qmd-query-expansion-1.7B-GGUF:Q4_K_M qmd-query-expansion
+ollama pull hf.co/tobil/qmd-query-expansion-1.7b-GGUF:Q4_K_M
 ```
 
 ### 3. Configure
@@ -131,7 +130,7 @@ API endpoints (for scripting):
 | `OPENAI_MODEL` | `gpt-4o-mini` | Contextualization model. |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL. |
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text-v2-moe` | Embedding model. Multilingual for Greek language as well |
-| `OLLAMA_QUERY_EXPANSION_MODEL` | `qmd-query-expansion` | Local query expansion model. |
+| `OLLAMA_QUERY_EXPANSION_MODEL` | `hf.co/tobil/qmd-query-expansion-1.7b-GGUF:Q4_K_M` | Local query expansion model. |
 | `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | Cross-encoder reranker. |
 | `CHROMA_DB_PATH` | `./data/chromadb` | Persistent vector DB path. |
 | `SOURCES_DIR` | `./sources` | Input documents folder. |
@@ -164,7 +163,7 @@ API endpoints (for scripting):
 │   ├── database.py          # ChromaDB wrapper
 │   ├── bm25_index.py        # Lightweight BM25
 │   ├── reranker.py          # BGE cross-encoder reranker
-│   ├── query_expander.py    # qmd-query-expansion (Qwen3-1.7B)
+│   ├── query_expander.py    # qmd-query-expansion-1.7b-GGUF (Qwen3-1.7B)
 │   ├── answerer.py          # Strict-grounded answer synthesis with citations
 │   ├── retriever.py         # RRF fusion + rerank pipeline
 │   ├── ingest.py            # End-to-end ingest function with progress callback
