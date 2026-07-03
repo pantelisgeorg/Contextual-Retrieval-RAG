@@ -16,6 +16,7 @@ class Chunk:
 
 SEPARATORS = ["\n\n", "\n", ". ", "! ", "? ", " ", ""]
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
+MD_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 
 
 def recursive_split(text: str, chunk_size: int, chunk_overlap: int) -> List[str]:
@@ -87,12 +88,50 @@ def _render_section(path: List[str], body: str) -> str:
     return "\n".join(path) + "\n\n" + body
 
 
-def _pack_sections(sections: List[str], chunk_size: int, chunk_overlap: int) -> List[str]:
-    """Greedily pack rendered sections so each chunk is close to (but ≤) chunk_size.
+def _is_table_block(text: str) -> bool:
+    """True if every non-blank line in the block is a markdown table row."""
+    lines = [l for l in text.splitlines() if l.strip()]
+    return len(lines) >= 2 and all(MD_TABLE_ROW_RE.match(l) for l in lines)
 
-    Sections that exceed chunk_size are split via recursive_split. A final pass
-    merges tiny tail chunks into their previous neighbor to avoid micro-chunks.
+
+def _text_to_blocks(text: str) -> List[str]:
+    """Split text into blocks on blank lines. Adjacent table-row blocks with no
+    blank line between them are merged so a whole markdown table is one block."""
+    lines = text.split("\n")
+    blocks: List[str] = []
+    cur: List[str] = []
+    for line in lines:
+        if line.strip() == "":
+            if cur:
+                blocks.append("\n".join(cur))
+                cur = []
+        else:
+            cur.append(line)
+    if cur:
+        blocks.append("\n".join(cur))
+    merged: List[str] = []
+    for b in blocks:
+        if merged and _is_table_block(merged[-1]) and _is_table_block(b):
+            merged[-1] = merged[-1] + "\n" + b
+        else:
+            merged.append(b)
+    return merged
+
+
+def _pack_sections(sections: List[str], chunk_size: int, chunk_overlap: int) -> List[str]:
+    """Greedily pack blocks into chunks ≤ chunk_size, keeping markdown tables
+    intact (a table is never split mid-row). Oversized non-table blocks are
+    split via recursive_split; an oversized table stands alone as one chunk.
+    A final pass merges tiny tail chunks into their previous neighbor.
     """
+    blocks: List[str] = []
+    for sec in sections:
+        for part in _text_to_blocks(sec.strip()):
+            if _is_table_block(part) or len(part) <= chunk_size:
+                blocks.append(part)
+            else:
+                blocks.extend(recursive_split(part, chunk_size, chunk_overlap))
+
     chunks: List[str] = []
     buf: List[str] = []
     buf_len = 0
@@ -105,22 +144,15 @@ def _pack_sections(sections: List[str], chunk_size: int, chunk_overlap: int) -> 
             buf = []
             buf_len = 0
 
-    for sec in sections:
-        sec = sec.strip()
-        if not sec:
-            continue
-        if len(sec) > chunk_size:
-            flush()
-            chunks.extend(recursive_split(sec, chunk_size, chunk_overlap))
-            continue
-        addition = len(sec) + (len(sep) if buf else 0)
+    for b in blocks:
+        addition = len(b) + (len(sep) if buf else 0)
         if buf and buf_len + addition > chunk_size:
             flush()
-            buf.append(sec)
-            buf_len = len(sec)
-        else:
-            buf.append(sec)
-            buf_len += addition
+            addition = len(b)
+        buf.append(b)
+        buf_len += addition
+        if len(b) > chunk_size:
+            flush()
     flush()
 
     # Merge tiny chunks back into their previous neighbor (allow up to 20% overflow).
@@ -143,7 +175,7 @@ def chunk_documents(docs: List[Document], chunk_size: int, chunk_overlap: int) -
         sections = _split_on_headings(doc.content)
         has_headings = any(path for path, _ in sections)
         if not has_headings:
-            texts = recursive_split(doc.content, chunk_size, chunk_overlap)
+            texts = _pack_sections([doc.content], chunk_size, chunk_overlap)
         else:
             rendered = [_render_section(path, body) for path, body in sections]
             texts = _pack_sections(rendered, chunk_size, chunk_overlap)

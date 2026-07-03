@@ -54,7 +54,11 @@ def run_ingest(
             on_event(ev)
 
     if config.use_docling:
-        emit(type="info", msg="Docling enabled — using structured markdown extraction.")
+        emit(type="info", msg=f"Docling enabled — model={config.docling_model}")
+        if config.docling_model == "smoldocling":
+            emit(type="info", msg="SmolDocling VLM (GPU, float16) — best for scanned documents.")
+        else:
+            emit(type="info", msg="Standard pipeline + TableFormer v2 (structured tables from text layer).")
         if config.ocr_enabled:
             emit(type="info", msg=f"OCR enabled (Tesseract, langs={config.ocr_langs})")
 
@@ -65,6 +69,8 @@ def run_ingest(
         single_file=file,
         ocr_enabled=config.ocr_enabled,
         ocr_langs=config.ocr_langs,
+        docling_model=config.docling_model,
+        vlm_max_size=config.docling_vlm_max_size,
     )
     if not docs:
         emit(type="done", chunks=0, msg="No documents found.")

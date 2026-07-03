@@ -137,7 +137,9 @@ API endpoints (for scripting):
 | `USE_DOCLING` | `false` | Enable Docling for structure-preserving extraction (markdown, headings, tables, images). Recommended `true`. |
 | `OCR_ENABLED` | `false` | Run OCR on image regions / scanned pages (Docling only). Born-digital PDFs don't need it. Enable for scanned docs. Requires Tesseract installed system-wide. |
 | `OCR_LANGS` | `ell+eng` | `+`-separated [Tesseract language codes](https://github.com/tesseract-ocr/tessdata). Each language requires its `tesseract-ocr-<code>` system package (e.g. `sudo apt install tesseract-ocr-ell tesseract-ocr-eng`). |
-| `CHUNK_SIZE` | `800` | Characters per chunk. Larger → fewer GPT calls during ingest, but coarser retrieval granularity. 1500–3000 works well with Docling. |
+| `DOCLING_MODEL` | `default` | Docling document model. `default` = standard layout pipeline + **TableFormer v2** (reads the embedded text layer, accurate text, fixed table alignment). `smoldocling` = 256M vision-language model (`docling-project/SmolDocling-256M`) running in-process via transformers on the GPU — best for **scanned** documents with no text layer. See [Document Models](#document-models). |
+| `DOCLING_VLM_MAX_SIZE` | `1280` | SmolDocling only: longest image edge (px) fed to the VLM. Lower = less VRAM, lower = lower OCR quality. |
+| `CHUNK_SIZE` | `800` | Characters per chunk. Larger → fewer GPT calls during ingest, but coarser retrieval granularity. 1500–3000 works well with Docling. Tables are never split across chunks. |
 | `CHUNK_OVERLAP` | `100` | Overlap when a section exceeds chunk size and must be split. |
 | `QUERY_EXPANSION` | `false` | Enable query expansion. |
 | `RERANKING` | `true` | Enable reranking. |
@@ -188,8 +190,8 @@ API endpoints (for scripting):
 
 ## How It Works
 
-1. **Document loading** — when `USE_DOCLING=true`, PDFs/DOCX/PPTX/HTML go through Docling, producing markdown with real headings, tables, and `![Image](/images/...)` references. Two persistent copies are written per document: `data/markdown/<slug>.md` (image-referenced, fed into the RAG and the web UI) and `data/export/<slug>.md` (base64-embedded, a single self-contained file you can hand to a wiki). With `OCR_ENABLED=true`, Tesseract OCRs any region without an embedded text layer. Otherwise PyMuPDF extracts plain text from PDFs.
-2. **Heading-aware chunking** — markdown is split on heading boundaries; small adjacent sections are greedily packed up to `CHUNK_SIZE` so each chunk is semantically coherent (a full section, not a mid-sentence cut). Heading paths are preserved as prefixes so the contextualizer and embedder see *where* each chunk lives.
+1. **Document loading** — when `USE_DOCLING=true`, PDFs/DOCX/PPTX/HTML go through Docling, producing markdown with real headings, tables, and `![Image](/images/...)` references. Two persistent copies are written per document: `data/markdown/<slug>.md` (image-referenced, fed into the RAG and the web UI) and `data/export/<slug>.md` (base64-embedded, a single self-contained file you can hand to a wiki). The default pipeline uses the **v2 TableFormer** and reads text from the embedded text layer (accurate, no OCR errors); a post-pass re-derives table column order from cell coordinates so each value lands under the correct header. For scanned documents with no text layer, set `DOCLING_MODEL=smoldocling` to run the 256M SmolDocling VLM (OCRs the page image end-to-end). With `OCR_ENABLED=true` on the default pipeline, Tesseract OCRs any region without an embedded text layer. Otherwise PyMuPDF extracts plain text from PDFs.
+2. **Heading-aware chunking** — markdown is split on heading boundaries; small adjacent sections are greedily packed up to `CHUNK_SIZE` so each chunk is semantically coherent (a full section, not a mid-sentence cut). **Markdown tables are atomic** — a table is never split across chunks (an oversized table becomes one chunk rather than being broken mid-row). Heading paths are preserved as prefixes so the contextualizer and embedder see *where* each chunk lives.
 3. **Contextualization** — for each chunk, GPT-4o-mini gets the full document plus that chunk and returns 1–2 sentences situating the chunk in the larger doc. That blurb is **prepended to the chunk before embedding** ([Anthropic's Contextual Retrieval technique](https://www.anthropic.com/news/contextual-retrieval)).
 4. **Embedding** — the contextualized chunk is embedded via Ollama's `nomic-embed-text-v2-moe`.
 5. **Storage** — embeddings + metadata go into ChromaDB. A parallel BM25 index is built over the same text for keyword search.
@@ -200,6 +202,21 @@ API endpoints (for scripting):
    - Optional reranking with `bge-reranker-v2-m3` re-scores the top candidates.
 7. **Answer synthesis** — when `ANSWER_SYNTHESIS=true`, the retrieved passages and the question are sent to `ANSWER_MODEL` (default `gpt-4o-mini`) with a strict-grounding prompt: answer only from the passages, match the question's language, cite passages inline as `[1]`, `[3]`, etc. The answer is rendered above the source chunks.
 8. **Display** — the web UI shows the synthesized answer at the top and renders source chunks as markdown so headings and diagrams are visible inline. To make sure figures show even when the cited chunk is text-only (the chunker can split a figure away from its descriptive paragraph), the server retrieves a larger candidate pool and surfaces up to 3 extra image-bearing chunks from the same document, ranked by the retriever's own score. Pipeline chips show what actually ran for the query.
+
+## Document Models
+
+`DOCLING_MODEL` selects how Docling converts documents to markdown:
+
+| Model | How it works | Text source | Best for | GPU |
+|---|---|---|---|---|
+| `default` (default) | Standard layout pipeline + **TableFormer v2** | Embedded text layer (exact) | Born-digital PDFs/DOCX/PPTX | Optional |
+| `smoldocling` | 256M vision-language model (`docling-project/SmolDocling-256M`) processes each page image → DocTags | VLM reads the image (OCR) | Scanned docs, image-only PDFs | Recommended |
+
+**Tables.** With `default`, the v2 TableFormer detects the table grid and pulls each cell's text from the embedded layer (no OCR errors). Docling's TableFormer sometimes assigns correct cell bounding boxes but *wrong column indices* (a cyclic shift that lands a value under the wrong header); a built-in post-pass re-derives each column from the cells' x-coordinates so every value sits under the correct header. With `smoldocling`, table structure comes from the VLM's DocTags — clean, but the cell text is OCR'd, so non-Latin scripts may contain recognition errors.
+
+**SmolDocling on the GPU.** SmolDocling ships as a bfloat16 model, but Pascal GPUs (sm_61, e.g. GTX 1070 Ti) have no native bfloat16, so it's forced to **float16** automatically (≈2 GB VRAM at `DOCLING_VLM_MAX_SIZE=1280`, ~0.4 s/page). It runs in-process via the transformers backend — **no vLLM required** (vLLM needs compute capability ≥ 7.0 anyway). Lower `DOCLING_VLM_MAX_SIZE` to reduce VRAM at the cost of OCR quality.
+
+> For most documents — including this project's Greek PDFs — keep `DOCLING_MODEL=default`. Switch to `smoldocling` only when the source has no embedded text layer (scans, photographs of pages).
 
 ## GPU Support
 
@@ -214,7 +231,7 @@ The torch stack is pinned to **`torch==2.5.1+cu121`** (CUDA 12.1) in `pyproject.
 | Ada | RTX 4090 | 8.9 | Yes (PTX JIT) |
 | Hopper | H100 | 9.0 | Yes |
 
-The reranker (`bge-reranker-v2-m3`), Docling layout/OCR models, and EasyOCR run on the GPU automatically when one is visible, and fall back to CPU otherwise. CPU mode is fully functional — ingest just takes a minute or two longer.
+The reranker (`bge-reranker-v2-m3`), Docling layout/OCR models, EasyOCR, and the SmolDocling VLM run on the GPU automatically when one is visible, and fall back to CPU otherwise. CPU mode is fully functional — ingest just takes a minute or two longer (SmolDocling on CPU is noticeably slow; prefer the `default` model or a GPU).
 
 > **Why the pin?** PyTorch ≥2.6 removed `sm_50`/`sm_60` from its CUDA wheels, so on a Pascal or Maxwell card you'd hit `cudaErrorNoKernelImageForDevice`. The 2.5.1+cu121 build is the last release that still ships those kernels. `uv sync` picks up the pin automatically; pip users need `--extra-index-url https://download.pytorch.org/whl/cu121` (see `requirements.txt`).
 
@@ -224,7 +241,7 @@ To force CPU (e.g. for a Kepler-class GPU below compute 5.0), set `CUDA_VISIBLE_
 
 - **No Docker required**: BM25, reranker, and Docling all run locally in pure Python / PyTorch.
 - **Local-first**: only contextualization (ingest) and HF model downloads (first run) need network.
-- **Table extraction limits**: Docling's TableFormer occasionally mis-structures complex tables — e.g. splitting a cell's text across adjacent columns, or promoting the first data row to a header when a table has no header row. These are model-level artifacts with no safe automatic fix; verify extracted tables against the source PDF for documents with heavy tabular content.
+- **Table extraction**: the default pipeline uses the **v2 TableFormer**, which keeps cell text intact (the older v1 model split cells mid-phrase). A coordinate-based post-pass then re-derives each cell's column from its x-position, fixing the cyclic column shifts the TableFormer sometimes produces. The result is correct column-to-header alignment with accurate text from the embedded layer. SmolDocling (`DOCLING_MODEL=smoldocling`) produces clean table structure too, but reads text from the page image, so non-Latin scripts (e.g. Greek) may show OCR errors — prefer `default` for born-digital PDFs and `smoldocling` for scans.
 - **uv vs pip**: `uv sync` is the supported path. A `requirements.txt` is kept alongside `pyproject.toml` for compatibility with plain-pip workflows, but if you `uv add <pkg>` later you'll need to mirror it manually (or run `uv export -o requirements.txt`).
 
 ## License
