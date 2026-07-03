@@ -10,14 +10,32 @@ dependencies = [
     "sentence-transformers>=3.0.0",
     "rank-bm25>=0.2.2",
     "pymupdf>=1.24.0",
-    "docling>=2.0.0",
+    "docling==2.108.0",
     "tqdm>=4.66.0",
     "python-dotenv>=1.0.0",
     "numpy>=1.26.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "easyocr>=1.7.2",
+    # --- torch stack (CUDA 12.1) ---
+    # Pinned for Pascal GPUs (e.g. GTX 1070 Ti, compute capability 6.1 / sm_61),
+    # which newer torch (>=2.6) dropped from its prebuilt CUDA kernels.
+    "torch==2.5.1+cu121",
+    "torchvision==0.20.1+cu121",
+    "torchaudio==2.5.1+cu121",
+    "timm==1.0.19",
 ]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu121" }]
+torchvision = [{ index = "pytorch-cu121" }]
+torchaudio = [{ index = "pytorch-cu121" }]
+
+# PyTorch CUDA 12.1 wheel index (the only place these +cu121 builds live).
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
 
 [project.scripts]
 rag-system = "rag_system.cli:main"

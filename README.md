@@ -20,6 +20,7 @@ A complete implementation of Anthropic's **Contextual Retrieval** technique with
 - **Python 3.12+**
 - **[uv](https://docs.astral.sh/uv/)** — fast Python package manager. `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - **Ollama** running locally — handles embeddings and query expansion. `curl -fsSL https://ollama.com/install.sh | sh`
+- **An NVIDIA GPU (optional)** — accelerates the reranker, Docling, and EasyOCR. The torch stack is pinned to CUDA 12.1, supporting compute capability 5.0+ (see [GPU Support](#gpu-support)). Without one, everything runs on CPU.
 - **An OpenAI API key** — used only for GPT-4o-mini chunk contextualization at ingest time.
 - **Internet access on first ingest/query** — Docling models (~500 MB), the reranker (~600 MB), and embedding models are downloaded once and cached locally.
 
@@ -148,7 +149,7 @@ API endpoints (for scripting):
 | `ANSWER_SYNTHESIS` | `true` | Generate a written answer from the retrieved passages (with inline `[n]` citations). Disable to return raw chunks only. |
 | `ANSWER_MODEL` | falls back to `OPENAI_MODEL` | LLM used for answer synthesis (e.g. `gpt-4o-mini`, `gpt-4o`). |
 | `ANSWER_MAX_TOKENS` | `800` | Max tokens in the synthesized answer. |
-| `CUDA_VISIBLE_DEVICES` | unset | Set to empty string (`CUDA_VISIBLE_DEVICES=`) to force CPU — required for older GPUs (compute capability < 6.x) where torch's pre-built CUDA kernels are incompatible. |
+| `CUDA_VISIBLE_DEVICES` | unset | Restrict visible GPUs (e.g. `"0"`). Set to an empty string (`CUDA_VISIBLE_DEVICES=`) to force CPU — only needed for GPUs below compute capability 5.0. See [GPU Support](#gpu-support). |
 
 ## Project Structure
 
@@ -201,11 +202,30 @@ API endpoints (for scripting):
 7. **Answer synthesis** — when `ANSWER_SYNTHESIS=true`, the retrieved passages and the question are sent to `ANSWER_MODEL` (default `gpt-4o-mini`) with a strict-grounding prompt: answer only from the passages, match the question's language, cite passages inline as `[1]`, `[3]`, etc. The answer is rendered above the source chunks.
 8. **Display** — the web UI shows the synthesized answer at the top and renders source chunks as markdown so headings and diagrams are visible inline. To make sure figures show even when the cited chunk is text-only (the chunker can split a figure away from its descriptive paragraph), the server retrieves a larger candidate pool and surfaces up to 3 extra image-bearing chunks from the same document, ranked by the retriever's own score. Pipeline chips show what actually ran for the query.
 
+## GPU Support
+
+The torch stack is pinned to **`torch==2.5.1+cu121`** (CUDA 12.1) in `pyproject.toml`, sourced from the [PyTorch cu121 wheel index](https://download.pytorch.org/whl/cu121). These prebuilt kernels cover **compute capabilities 5.0–9.0** (`sm_50`–`sm_90`), including older cards that newer torch builds dropped:
+
+| GPU family | Example | Compute capability | Supported |
+|---|---|---|---|
+| Maxwell | Quadro K620 | 5.0 | Yes |
+| Pascal | GTX 1070 Ti | 6.1 | Yes |
+| Turing | RTX 2070 | 7.5 | Yes |
+| Ampere | RTX 3080 | 8.6 | Yes |
+| Ada | RTX 4090 | 8.9 | Yes (PTX JIT) |
+| Hopper | H100 | 9.0 | Yes |
+
+The reranker (`bge-reranker-v2-m3`), Docling layout/OCR models, and EasyOCR run on the GPU automatically when one is visible, and fall back to CPU otherwise. CPU mode is fully functional — ingest just takes a minute or two longer.
+
+> **Why the pin?** PyTorch ≥2.6 removed `sm_50`/`sm_60` from its CUDA wheels, so on a Pascal or Maxwell card you'd hit `cudaErrorNoKernelImageForDevice`. The 2.5.1+cu121 build is the last release that still ships those kernels. `uv sync` picks up the pin automatically; pip users need `--extra-index-url https://download.pytorch.org/whl/cu121` (see `requirements.txt`).
+
+To force CPU (e.g. for a Kepler-class GPU below compute 5.0), set `CUDA_VISIBLE_DEVICES=` in `.env`.
+
 ## Notes
 
 - **No Docker required**: BM25, reranker, and Docling all run locally in pure Python / PyTorch.
 - **Local-first**: only contextualization (ingest) and HF model downloads (first run) need network.
-- **Older GPUs**: torch ships CUDA kernels for compute 6.x+. On a Quadro K620 or similar, you'll see `cudaErrorNoKernelImageForDevice` — set `CUDA_VISIBLE_DEVICES=` in `.env` to force CPU. Docling and the reranker run fine on CPU; ingest takes a minute or two longer.
+- **Table extraction limits**: Docling's TableFormer occasionally mis-structures complex tables — e.g. splitting a cell's text across adjacent columns, or promoting the first data row to a header when a table has no header row. These are model-level artifacts with no safe automatic fix; verify extracted tables against the source PDF for documents with heavy tabular content.
 - **uv vs pip**: `uv sync` is the supported path. A `requirements.txt` is kept alongside `pyproject.toml` for compatibility with plain-pip workflows, but if you `uv add <pkg>` later you'll need to mirror it manually (or run `uv export -o requirements.txt`).
 
 ## License
